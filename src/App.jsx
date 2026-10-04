@@ -9,6 +9,9 @@ const links = [
   { to: '/lookup', label: 'Order lookup' },
 ]
 
+// External: the Temporal UI for scrape / lookup workflows.
+const TEMPORAL_URL = 'https://temporal.a2mated.cloud'
+
 // Wide tables: these pages use the full viewport width instead of max-w-7xl.
 const FULL_WIDTH = ['/report']
 
@@ -60,6 +63,15 @@ export default function App() {
                   {l.label}
                 </NavLink>
               ))}
+              <a
+                href={TEMPORAL_URL}
+                target="_blank"
+                rel="noreferrer"
+                title="Temporal UI (opens in a new tab)"
+                className="px-3 py-1.5 rounded-md text-sm font-medium transition text-slate-600 hover:text-slate-900 hover:bg-slate-100"
+              >
+                Temporal <span className="text-xs">↗</span>
+              </a>
             </nav>
           </div>
           <div className="flex items-center gap-3">
