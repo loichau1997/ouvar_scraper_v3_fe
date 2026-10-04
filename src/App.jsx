@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { useState } from 'react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { API_BASE } from './api.js'
 
 const links = [
@@ -8,13 +9,41 @@ const links = [
   { to: '/lookup', label: 'Order lookup' },
 ]
 
+// Wide tables: these pages use the full viewport width instead of max-w-7xl.
+const FULL_WIDTH = ['/report']
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'dark')
+  const toggle = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    document.documentElement.dataset.theme = next
+    try { localStorage.setItem('theme', next) } catch { /* storage unavailable */ }
+    setTheme(next)
+  }
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+      className="text-xs px-2.5 py-1 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+    >
+      {theme === 'dark' ? '☀ Light' : '☾ Dark'}
+    </button>
+  )
+}
+
 export default function App() {
+  const { pathname } = useLocation()
+  const width = FULL_WIDTH.includes(pathname) ? 'max-w-none' : 'max-w-7xl'
   return (
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-50 bg-white/90 backdrop-blur border-b border-slate-200 shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
+        <div className={`${width} mx-auto px-6 h-14 flex items-center justify-between`}>
           <div className="flex items-center gap-8">
-            <div className="font-semibold text-slate-900 tracking-tight">Ouvar Scraper</div>
+            <div className="flex items-center gap-2 font-semibold text-slate-900 tracking-tight">
+              <img src="/favicon.svg" alt="" className="w-7 h-7" />
+              Ouvar Scraper <span className="text-xs font-medium text-indigo-600">V3</span>
+            </div>
             <nav className="flex items-center gap-1">
               {links.map(l => (
                 <NavLink
@@ -33,10 +62,13 @@ export default function App() {
               ))}
             </nav>
           </div>
-          <div className="text-xs text-slate-400 font-mono">{API_BASE}</div>
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-slate-400 font-mono">{API_BASE}</div>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-6">
+      <main className={`flex-1 ${width} w-full mx-auto px-6 py-6`}>
         <Outlet />
       </main>
     </div>

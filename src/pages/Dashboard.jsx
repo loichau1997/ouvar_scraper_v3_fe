@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchJson, API_BASE } from '../api.js'
+import { fetchJson } from '../api.js'
 import { fmtDuration, fmtNum, relTime } from '../utils.js'
 
 function TokenBadge({ token }) {
@@ -68,7 +68,59 @@ function ScrapeDialog({ tenant, onClose, onSubmit }) {
   )
 }
 
-function TenantCard({ t, onScrape }) {
+function TokenDialog({ tenant, onClose, onSaved }) {
+  const [curl, setCurl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const save = async () => {
+    setBusy(true); setErr('')
+    try {
+      await fetchJson(`/api/tenants/${tenant.tenant}/token`, {
+        method: 'POST',
+        body: JSON.stringify({ curl }),
+      })
+      onSaved()
+      onClose()
+    } catch (e) { setErr(e.message); setBusy(false) }
+  }
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6" onClick={e => e.stopPropagation()}>
+        <h3 className="text-lg font-semibold mb-1">Token for {tenant.label}</h3>
+        <ol className="text-xs text-slate-500 mb-3 list-decimal pl-4 space-y-0.5">
+          <li>Log in to {tenant.label}'s Ouvar in your browser and open DevTools → Network.</li>
+          <li>Right-click any API request → Copy → <b>Copy as cURL</b> (bash or cmd both work).</li>
+          <li>Paste it below. Only the Authorization header and request headers are kept.</li>
+        </ol>
+        {tenant.token?.invalid_reason && (
+          <div className="mb-3 text-xs bg-rose-50 border border-rose-200 text-rose-700 rounded p-2">{tenant.token.invalid_reason}</div>
+        )}
+        <textarea
+          autoFocus
+          value={curl}
+          onChange={e => setCurl(e.target.value)}
+          rows={9}
+          spellCheck={false}
+          placeholder="curl 'https://…' -H 'authorization: Bearer …'"
+          className="w-full text-xs font-mono border border-slate-200 rounded px-3 py-2"
+        />
+        {err && <div className="mt-2 text-rose-700 bg-rose-50 border border-rose-200 rounded p-2 text-xs">{err}</div>}
+        <div className="mt-4 flex gap-2 justify-end">
+          <button className="px-3 py-1.5 text-sm rounded border border-slate-200 hover:bg-slate-50" onClick={onClose} disabled={busy}>Cancel</button>
+          <button
+            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+            disabled={busy || !curl.trim()}
+            onClick={save}
+          >
+            {busy ? 'Saving…' : 'Save token'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TenantCard({ t, onScrape, onToken }) {
   const r = t.last_run
   const needsToken = !t.token?.stored || t.token?.expired
   return (
@@ -78,8 +130,20 @@ function TenantCard({ t, onScrape }) {
           <div className="text-sm font-mono text-slate-500">{t.tenant}</div>
           <div className="text-lg font-semibold">{t.label}</div>
         </div>
-        <TokenBadge token={t.token} />
+        <div className="text-right">
+          <TokenBadge token={t.token} />
+          {t.token?.stored && (
+            <div className="text-[10px] text-slate-400 mt-1" title={t.token.masked}>
+              {t.token.expired ? 'expired' : 'expires'} {t.token.expires_at ? new Date(t.token.expires_at).toLocaleDateString() : '—'}
+            </div>
+          )}
+        </div>
       </div>
+      {t.token?.invalid_reason && (
+        <div className="mb-3 text-[11px] bg-rose-50 border border-rose-200 text-rose-700 rounded p-2 line-clamp-2" title={t.token.invalid_reason}>
+          {t.token.invalid_reason}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3 text-sm mb-3">
         <div>
           <div className="text-slate-500 text-xs">Orders stored</div>
@@ -125,16 +189,13 @@ function TenantCard({ t, onScrape }) {
         >
           Scrape now
         </button>
-        {needsToken && (
-          <a
-            href={`${API_BASE}/tokens/`}
-            target="_blank"
-            rel="noreferrer"
-            className="px-3 py-1.5 text-sm rounded border border-rose-300 text-rose-700 hover:bg-rose-50"
-          >
-            Re-paste cURL
-          </a>
-        )}
+        <button
+          onClick={() => onToken(t)}
+          className={`px-3 py-1.5 text-sm rounded border ${needsToken ? 'border-rose-300 text-rose-700 hover:bg-rose-50' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+          title="Paste a cURL copied from Ouvar"
+        >
+          {needsToken ? 'Paste cURL' : 'Update token'}
+        </button>
       </div>
     </div>
   )
@@ -145,6 +206,7 @@ export default function Dashboard() {
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [dialogTenant, setDialogTenant] = useState(null)
+  const [tokenTenant, setTokenTenant] = useState(null)
   const [toast, setToast] = useState('')
 
   const load = useCallback(async () => {
@@ -196,7 +258,7 @@ export default function Dashboard() {
       {data && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {data.tenants.map(t => (
-            <TenantCard key={t.tenant} t={t} onScrape={setDialogTenant} />
+            <TenantCard key={t.tenant} t={t} onScrape={setDialogTenant} onToken={setTokenTenant} />
           ))}
         </div>
       )}
@@ -206,6 +268,18 @@ export default function Dashboard() {
           tenant={dialogTenant}
           onClose={() => setDialogTenant(null)}
           onSubmit={(body) => submitScrape(dialogTenant, body)}
+        />
+      )}
+
+      {tokenTenant && (
+        <TokenDialog
+          tenant={tokenTenant}
+          onClose={() => setTokenTenant(null)}
+          onSaved={() => {
+            setToast(`Token saved for ${tokenTenant.label}`)
+            setTimeout(() => setToast(''), 5000)
+            load()
+          }}
         />
       )}
 

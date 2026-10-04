@@ -1,10 +1,16 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ouvar_scraper_v3_fe</title>
+    <title>Ouvar Scraper V3</title>
+    <script>
+      // Apply the saved theme before first paint; dark unless the user chose light.
+      try {
+        if (localStorage.getItem('theme') === 'light') document.documentElement.dataset.theme = 'light'
+      } catch {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

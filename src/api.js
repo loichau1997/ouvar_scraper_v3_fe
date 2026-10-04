@@ -20,7 +20,8 @@ export async function fetchJson(path, opts = {}) {
   const res = await fetch(url, {
     ...opts,
     headers: headers({
-      'Content-Type': 'application/json',
+      // FormData sets its own multipart Content-Type (with boundary).
+      ...(opts.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
       ...(opts.headers || {}),
     }),
   })

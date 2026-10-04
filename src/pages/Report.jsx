@@ -2,23 +2,100 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { buildQuery, downloadBlob, fetchBlob, fetchJson, filenameFromDisposition } from '../api.js'
 import { fmtDate, fmtNum } from '../utils.js'
 
-const SORTABLE = {
-  tenant: 'Tenant',
-  order_number: 'Order #',
-  store_name: 'Store',
-  segment: 'Segment',
-  tracking_number: 'Tracking #',
-  created_date: 'Created',
-  product_code: 'Product code',
-  product_name: 'Product name',
-  quantity: 'Qty',
-  uom_name: 'UoM',
-  length: 'L',
-  width: 'W',
-  height: 'H',
-  weight: 'Weight',
-  diagonal_length_mm: 'Diagonal',
-  chargeable_kg: 'Chargeable',
+function FlagCell({ v }) {
+  if (v === true) return <span className="inline-block text-[11px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">FLAG</span>
+  if (v === false) return <span className="text-[11px] text-slate-400">OK</span>
+  return <span title="Not enough data to check" className="text-slate-300">—</span>
+}
+
+const flag = (key, label, rule) => ({ key, label, rule, isFlag: true, align: 'center', render: r => <FlagCell v={r[key]} /> })
+const num = (key, label, dp = 0, rule) => ({ key, label, rule, dp, align: 'right', render: r => fmtNum(r[key], dp) })
+
+// Columns totalled on an order's sum row. Dimensions and per-item derived
+// measures (diagonal, MHP) are not additive, so they are left blank there.
+const SUM_KEYS = new Set(['quantity', 'cartons', 'weight', 'cubic_volume_m3', 'cubic_kg', 'chargeable_kg'])
+
+// Every column is sortable server-side; keys match the backend's SORTABLE map.
+const COLUMNS = [
+  // order: true -> order-level column, shown once per order (rowSpan over its lines).
+  { key: 'tenant', label: 'Tenant', order: true, cls: 'font-mono text-xs' },
+  {
+    key: 'order_number', label: 'Order #', order: true,
+    render: (r, g) => (
+      <>
+        <div className="font-medium">{r.order_number}</div>
+        {g.size > 1 && <div className="text-[10px] text-indigo-500 whitespace-nowrap">{g.size} lines</div>}
+      </>
+    ),
+  },
+  { key: 'store_name', label: 'Store', order: true },
+  { key: 'segment', label: 'Segment', order: true },
+  { key: 'tracking_number', label: 'Tracking #', order: true, cls: 'font-mono text-xs' },
+  { key: 'created_date', label: 'Created', order: true, cls: 'whitespace-nowrap', render: r => fmtDate(r.created_date) },
+  { key: 'product_code', label: 'Product code', cls: 'font-mono text-xs' },
+  { key: 'product_name', label: 'Product name', cls: 'max-w-[260px] truncate', title: r => r.product_name },
+  num('quantity', 'Qty'),
+  { key: 'uom_name', label: 'UoM' },
+  num('cartons', '# Carton', 0, 'Single/Carton = qty · Bundle = qty/50 ↑'),
+  num('length', 'L', 0, 'mm'),
+  num('width', 'W', 0, 'mm'),
+  num('height', 'H', 0, 'mm'),
+  num('weight', 'Weight', 2, 'kg'),
+  flag('flag_length_out_of_range', 'Length flag', '<200 / >1200 mm'),
+  flag('flag_width_out_of_range', 'Width flag', '<100 / >500 mm'),
+  flag('flag_height_out_of_range', 'Height flag', '<15 / >500 mm'),
+  num('diagonal_length_mm', 'Diagonal', 1, 'mm'),
+  flag('flag_diagonal_over_1200mm', 'Diagonal flag', '>1200 mm'),
+  flag('flag_weight_out_of_range', 'Weight flag', '<250 g / >30 kg'),
+  num('mhp_diameter_cm', 'MHP diameter', 1, 'cm'),
+  num('cubic_volume_m3', 'Cubic volume', 4, 'm³'),
+  num('cubic_kg', 'Cubic weight', 2, 'kg'),
+  num('chargeable_kg', 'Chargeable weight', 2, 'kg'),
+]
+
+const ALIGN = { right: 'text-right', center: 'text-center' }
+
+function sumCell(c, rows) {
+  if (SUM_KEYS.has(c.key)) {
+    const vals = rows.map(r => r[c.key]).filter(v => v !== null && v !== undefined)
+    return vals.length ? fmtNum(vals.reduce((a, b) => a + b, 0), c.dp) : '—'
+  }
+  if (c.isFlag) {
+    const n = rows.filter(r => r[c.key] === true).length
+    return n ? <span className="text-[11px] font-semibold text-rose-700">{n} flagged</span> : null
+  }
+  return null
+}
+
+// Totals for one order. Only rendered for orders with more than one line, and it
+// covers the lines on this page -- an order split across pages is totalled per page.
+function SumRow({ g }) {
+  const orderCols = COLUMNS.filter(c => c.order).length
+  return (
+    <tr className={`border-t border-slate-200 font-semibold text-slate-900 ${g.band ? 'bg-slate-100' : 'bg-slate-50'}`}>
+      <td colSpan={orderCols} className="px-3 py-1.5 text-xs text-right text-slate-600">
+        Order {g.rows[0].order_number} total · {g.size} lines
+      </td>
+      {COLUMNS.filter(c => !c.order).map(c => (
+        <td key={c.key} className={`px-3 py-1.5 ${ALIGN[c.align] || ''}`}>{sumCell(c, g.rows)}</td>
+      ))}
+    </tr>
+  )
+}
+
+/**
+ * Group consecutive rows of the same order. Rows only sit together when the
+ * sort keeps them adjacent (any order-level column does, via the backend's
+ * order_row_id tiebreak); otherwise an order simply shows as several groups.
+ */
+function groupByOrder(rows) {
+  const groups = []
+  for (const r of rows) {
+    const last = groups[groups.length - 1]
+    if (last && last.id === r.order_row_id) last.rows.push(r)
+    else groups.push({ id: r.order_row_id, rows: [r] })
+  }
+  return groups.map((g, i) => ({ ...g, size: g.rows.length, band: i % 2 === 1 }))
 }
 
 function MultiSelect({ label, options, value, onChange }) {
@@ -98,12 +175,6 @@ function Tile({ label, value, active, onClick, tone = 'slate' }) {
   )
 }
 
-function Flag({ v, label }) {
-  if (v === true) return <span title={label} className="inline-block w-2 h-2 rounded-full bg-rose-500" />
-  if (v === false) return <span title={`${label}: ok`} className="inline-block w-2 h-2 rounded-full bg-slate-200" />
-  return <span title="Not enough data to check" className="inline-block w-2 h-2 rounded-full bg-transparent border border-slate-300" />
-}
-
 const EMPTY_FILTERS = {
   search: '',
   tenant: [],
@@ -174,6 +245,7 @@ export default function Report() {
   }
 
   const s = data?.summary
+  const groups = useMemo(() => groupByOrder(data?.rows || []), [data])
 
   return (
     <div>
@@ -250,60 +322,47 @@ export default function Report() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
-                {Object.entries(SORTABLE).map(([key, label]) => (
+                {COLUMNS.map(c => (
                   <th
-                    key={key}
-                    onClick={() => onSort(key)}
-                    className="px-3 py-2 whitespace-nowrap cursor-pointer hover:bg-slate-100 select-none"
+                    key={c.key}
+                    onClick={() => onSort(c.key)}
+                    title={c.rule}
+                    className={`px-3 py-2 whitespace-nowrap cursor-pointer hover:bg-slate-100 select-none align-bottom ${ALIGN[c.align] || ''}`}
                   >
-                    {label}
-                    {sort === key && <span className="ml-1 text-indigo-500">{direction === 'asc' ? '▲' : '▼'}</span>}
+                    {c.label}
+                    {sort === c.key && <span className="ml-1 text-indigo-500">{direction === 'asc' ? '▲' : '▼'}</span>}
+                    {c.rule && <div className="normal-case tracking-normal font-normal text-[10px] text-slate-400">{c.rule}</div>}
                   </th>
                 ))}
-                <th className="px-3 py-2">Flags</th>
               </tr>
             </thead>
             <tbody>
               {loading && !data && (
-                <tr><td colSpan={Object.keys(SORTABLE).length + 1} className="p-6 text-center text-slate-400">Loading…</td></tr>
+                <tr><td colSpan={COLUMNS.length} className="p-6 text-center text-slate-400">Loading…</td></tr>
               )}
               {data && data.rows.length === 0 && !loading && (
-                <tr><td colSpan={Object.keys(SORTABLE).length + 1} className="p-6 text-center text-slate-400">No rows match these filters.</td></tr>
+                <tr><td colSpan={COLUMNS.length} className="p-6 text-center text-slate-400">No rows match these filters.</td></tr>
               )}
-              {data?.rows.map(r => (
-                <tr key={`${r.order_row_id}-${r.item_row_id}-${r.stock_line_id}`} className="border-t border-slate-100 hover:bg-slate-50/60">
-                  <td className="px-3 py-2 font-mono text-xs">{r.tenant}</td>
-                  <td className="px-3 py-2">{r.order_number}</td>
-                  <td className="px-3 py-2">{r.store_name}</td>
-                  <td className="px-3 py-2">{r.segment}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.tracking_number}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{fmtDate(r.created_date)}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{r.product_code}</td>
-                  <td className="px-3 py-2 max-w-[260px] truncate" title={r.product_name}>{r.product_name}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.quantity)}</td>
-                  <td className="px-3 py-2">{r.uom_name}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.length)}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.width)}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.height)}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.weight, 2)}</td>
-                  <td className="px-3 py-2 text-right">{fmtNum(r.diagonal_length_mm, 1)}</td>
-                  <td
-                    className="px-3 py-2 text-right"
-                    title={r.cubic_volume_m3 !== null ? `Cubic volume: ${fmtNum(r.cubic_volume_m3, 4)} m³` : ''}
-                  >
-                    {fmtNum(r.chargeable_kg, 2)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex gap-1">
-                      <Flag v={r.flag_length_out_of_range} label="Length out of range" />
-                      <Flag v={r.flag_width_out_of_range} label="Width out of range" />
-                      <Flag v={r.flag_height_out_of_range} label="Height out of range" />
-                      <Flag v={r.flag_diagonal_over_1200mm} label="Diagonal > 1200mm" />
-                      <Flag v={r.flag_weight_out_of_range} label="Weight out of range" />
-                    </div>
-                  </td>
+              {groups.map(g => [...g.rows.map((r, i) => (
+                <tr
+                  key={`${r.order_row_id}-${r.item_row_id}-${r.stock_line_id}`}
+                  className={`${i === 0 ? 'border-t-2 border-slate-300' : 'border-t border-dashed border-slate-100'} ${g.band ? 'bg-slate-50' : ''} hover:bg-indigo-50/40`}
+                >
+                  {COLUMNS.map(c => {
+                    if (c.order && i > 0) return null
+                    return (
+                      <td
+                        key={c.key}
+                        rowSpan={c.order ? g.size : undefined}
+                        title={c.title?.(r)}
+                        className={`px-3 py-2 ${c.order ? 'align-top' : ''} ${ALIGN[c.align] || ''} ${c.cls || ''}`}
+                      >
+                        {c.render ? c.render(r, g) : r[c.key]}
+                      </td>
+                    )
+                  })}
                 </tr>
-              ))}
+              )), g.size > 1 && <SumRow key={`sum-${g.id}`} g={g} />])}
             </tbody>
           </table>
         </div>
